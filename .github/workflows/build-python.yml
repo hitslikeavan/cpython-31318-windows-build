@@ -1,0 +1,60 @@
+name: Build Python 3.13.18 for Windows x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 240
+
+    steps:
+      - name: Download and verify official CPython source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = 'https://www.python.org/ftp/python/3.13.18/Python-3.13.18.tgz'
+          $expected = '99dbc847fb6a3fb26358370fb4c591215864116ebb584f2b89ab0b74c51dfa2a'
+
+          Invoke-WebRequest -Uri $url -OutFile 'source.tgz'
+          $actual = (Get-FileHash 'source.tgz' -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+              throw "Source checksum mismatch: $actual"
+          }
+
+          tar.exe -xzf source.tgz
+          if ($LASTEXITCODE -ne 0) { throw 'Source extraction failed.' }
+
+      - name: Build the x64 installer
+        shell: cmd
+        working-directory: Python-3.13.18
+        run: |
+          call Tools\msi\buildrelease.bat -x64 --skip-pgo --skip-nuget --skip-zip
+          exit /b %ERRORLEVEL%
+
+      - name: Verify the built interpreter and collect the installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = 'Python-3.13.18\PCbuild\amd64'
+          $name = 'python-3.13.18-amd64.exe'
+
+          & "$build\python.exe" -I -c "import sys, struct, ssl, sqlite3; assert sys.version_info[:3] == (3, 13, 18); assert struct.calcsize('P') == 8; print(sys.version)"
+          if ($LASTEXITCODE -ne 0) { throw 'Interpreter verification failed.' }
+
+          New-Item -ItemType Directory -Path 'dist' | Out-Null
+          Copy-Item "$build\en-us\$name" "dist\$name"
+          $hash = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash
+          "$hash  $name" | Set-Content 'dist\SHA256.txt' -Encoding ascii
+          Write-Output "Installer SHA256: $hash"
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-3.13.18-windows-x64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
